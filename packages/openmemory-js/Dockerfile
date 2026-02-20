@@ -12,8 +12,7 @@ RUN npm ci
 # Copy source code and build the application
 COPY src/ ./src/
 COPY tsconfig.json ./
-ENV NODE_OPTIONS="--max-old-space-size=4096"
-RUN npm run build
+RUN NODE_OPTIONS="--max-old-space-size=4096" npm run build
 
 # Remove devDependencies to reduce image size for the runtime image
 RUN npm prune --omit=dev
