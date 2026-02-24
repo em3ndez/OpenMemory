@@ -24,6 +24,7 @@ jobs:
           cd packages/openmemory-py
           pip install -e .[dev]
           pip install pytest
+          pip install pytest-asyncio
           pip install python-dotenv
           pip install pyyaml
           
