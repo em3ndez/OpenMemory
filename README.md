@@ -1,11 +1,13 @@
-[![Cavira](/.github/siray.png)](https://www.siray.ai?ytag=affiliate_website_caviraoss_0212)
+# 🚧 This project is currently being fully rewritten.
 
-# OpenMemory
+Expect breaking changes and potential bugs.  
+If you find an issue, please open a GitHub issue with details so it can be tracked and resolved.
+## OpenMemory
 
 > **Real long-term memory for AI agents. Not RAG. Not a vector DB. Self-hosted, Python + Node.**
 
 [![VS Code Extension](https://img.shields.io/badge/VS%20Code-Extension-007ACC?logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=Nullure.openmemory-vscode)
-[![Discord](https://img.shields.io/discord/1300368230320697404?label=Discord)](https://discord.gg/P7HaRayqTh)
+[![Discord](https://img.shields.io/discord/1300368230320697404?label=Discord)](https://discord.gg/93M9XSuEj6)
 [![PyPI](https://img.shields.io/pypi/v/openmemory-py.svg)](https://pypi.org/project/openmemory-py/)
 [![npm](https://img.shields.io/npm/v/openmemory-js.svg)](https://www.npmjs.com/package/openmemory-js)
 [![License](https://img.shields.io/github/license/CaviraOSS/OpenMemory)](LICENSE)
@@ -22,18 +24,6 @@ OpenMemory is a **cognitive memory engine** for LLMs and agents.
 - 🔍 Explainable traces (see *why* something was recalled)
 
 Your model stays stateless. **Your app stops being amnesiac.**
-
----
-
-## ☁️ One‑click Deploy
-
-Spin up a shared OpenMemory backend (HTTP API + MCP + dashboard):
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/YOUR_TEMPLATE_ID)
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/CaviraOSS/OpenMemory)
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/CaviraOSS/OpenMemory)
-
-> Use the SDKs when you want **embedded local memory**. Use the server when you want **multi‑user org‑wide memory**.
 
 ---
 
@@ -178,7 +168,7 @@ git clone https://github.com/CaviraOSS/OpenMemory.git
 cd OpenMemory
 cp .env.example .env
 
-cd backend
+cd packages/openmemory-js
 npm install
 npm run dev   # default :8080
 ```
