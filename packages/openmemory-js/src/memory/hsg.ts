@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { canonical_token_set } from "../utils/text";
+import { canonical_token_set, stable_text_fallback_hash } from "../utils/text";
 import { inc_q, dec_q, on_query_hit } from "./decay";
 import { env, tier } from "../core/cfg";
 import { cos_sim, buf_to_vec, vec_to_buf } from "../utils/index";
@@ -119,10 +119,10 @@ export const sector_configs: Record<string, sector_cfg> = {
 export const sectors = Object.keys(sector_configs);
 export const scoring_weights = {
     similarity: 0.35,
-    overlap: 0.20,
+    overlap: 0.2,
     waypoint: 0.15,
-    recency: 0.10,
-    tag_match: 0.20,
+    recency: 0.1,
+    tag_match: 0.2,
 };
 export const hybrid_params = {
     tau: 3,
@@ -143,16 +143,38 @@ export const reinforcement = {
     prune_threshold: 0.05,
 };
 
-
-
 export const sector_relationships: Record<string, Record<string, number>> = {
-    semantic: { procedural: 0.8, episodic: 0.6, reflective: 0.7, emotional: 0.4 },
-    procedural: { semantic: 0.8, episodic: 0.6, reflective: 0.6, emotional: 0.3 },
-    episodic: { reflective: 0.8, semantic: 0.6, procedural: 0.6, emotional: 0.7 },
-    reflective: { episodic: 0.8, semantic: 0.7, procedural: 0.6, emotional: 0.6 },
-    emotional: { episodic: 0.7, reflective: 0.6, semantic: 0.4, procedural: 0.3 },
+    semantic: {
+        procedural: 0.8,
+        episodic: 0.6,
+        reflective: 0.7,
+        emotional: 0.4,
+    },
+    procedural: {
+        semantic: 0.8,
+        episodic: 0.6,
+        reflective: 0.6,
+        emotional: 0.3,
+    },
+    episodic: {
+        reflective: 0.8,
+        semantic: 0.6,
+        procedural: 0.6,
+        emotional: 0.7,
+    },
+    reflective: {
+        episodic: 0.8,
+        semantic: 0.7,
+        procedural: 0.6,
+        emotional: 0.6,
+    },
+    emotional: {
+        episodic: 0.7,
+        reflective: 0.6,
+        semantic: 0.4,
+        procedural: 0.3,
+    },
 };
-
 
 function has_temporal_markers(text: string): boolean {
     const temporal_patterns = [
@@ -162,11 +184,13 @@ function has_temporal_markers(text: string): boolean {
         /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}/i,
         /\bwhat\s+(did|have)\s+(i|we)\s+(do|done)\b/i,
     ];
-    return temporal_patterns.some(p => p.test(text));
+    return temporal_patterns.some((p) => p.test(text));
 }
 
-
-async function compute_tag_match_score(memory_id: string, query_tokens: Set<string>): Promise<number> {
+async function compute_tag_match_score(
+    memory_id: string,
+    query_tokens: Set<string>,
+): Promise<number> {
     const mem = await q.get_mem.get(memory_id);
     if (!mem?.tags) return 0;
 
@@ -181,9 +205,11 @@ async function compute_tag_match_score(memory_id: string, query_tokens: Set<stri
             if (query_tokens.has(tag_lower)) {
                 matches += 2;
             } else {
-
                 for (const token of query_tokens) {
-                    if (tag_lower.includes(token) || token.includes(tag_lower)) {
+                    if (
+                        tag_lower.includes(token) ||
+                        token.includes(tag_lower)
+                    ) {
                         matches += 1;
                     }
                 }
@@ -253,10 +279,10 @@ export function classify_content(
     const confidence =
         primaryScore > 0
             ? Math.min(
-                1.0,
-                primaryScore /
-                (primaryScore + (sortedScores[1]?.[1] || 0) + 1),
-            )
+                  1.0,
+                  primaryScore /
+                      (primaryScore + (sortedScores[1]?.[1] || 0) + 1),
+              )
             : 0.2;
     return {
         primary: primaryScore > 0 ? primary : "semantic",
@@ -295,6 +321,9 @@ export function boosted_sim(s: number): number {
 }
 export function compute_simhash(text: string): string {
     const tokens = canonical_token_set(text);
+    if (!tokens.size) {
+        return stable_text_fallback_hash(text);
+    }
     const hashes = Array.from(tokens).map((t) => {
         let h = 0;
         for (let i = 0; i < t.length; i++) {
@@ -379,16 +408,18 @@ export function extract_essence(
         if (/\b(I|my|me)\b/.test(s)) sc += 1;
         return sc;
     };
-    const scored = sents.map((s, idx) => ({ text: s, score: score_sent(s, idx), idx }));
+    const scored = sents.map((s, idx) => ({
+        text: s,
+        score: score_sent(s, idx),
+        idx,
+    }));
 
     scored.sort((a, b) => b.score - a.score);
-
 
     const selected: typeof scored = [];
     let current_len = 0;
 
-
-    const firstSent = scored.find(s => s.idx === 0);
+    const firstSent = scored.find((s) => s.idx === 0);
     if (firstSent && firstSent.text.length < max_len) {
         selected.push(firstSent);
         current_len += firstSent.text.length;
@@ -402,10 +433,9 @@ export function extract_essence(
         }
     }
 
-
     selected.sort((a, b) => a.idx - b.idx);
 
-    return selected.map(s => s.text).join(" ");
+    return selected.map((s) => s.text).join(" ");
 }
 export function compute_token_overlap(
     q_toks: Set<string>,
@@ -450,6 +480,7 @@ export async function create_cross_sector_waypoints(
     prim_sec: string,
     add_secs: string[],
     user_id?: string | null,
+    project_id?: string | null,
 ): Promise<void> {
     const now = Date.now();
     const wt = 0.5;
@@ -458,6 +489,7 @@ export async function create_cross_sector_waypoints(
             prim_id,
             `${prim_id}:${sec}`,
             user_id || "anonymous",
+            project_id || null,
             wt,
             now,
             now,
@@ -466,6 +498,7 @@ export async function create_cross_sector_waypoints(
             `${prim_id}:${sec}`,
             prim_id,
             user_id || "anonymous",
+            project_id || null,
             wt,
             now,
             now,
@@ -504,6 +537,7 @@ export async function create_single_waypoint(
     new_mean: number[],
     ts: number,
     user_id?: string | null,
+    project_id?: string | null,
 ): Promise<void> {
     const thresh = 0.75;
     const mems = user_id
@@ -523,12 +557,21 @@ export async function create_single_waypoint(
             new_id,
             best.id,
             user_id || "anonymous",
+            project_id || null,
             best.similarity,
             ts,
             ts,
         );
     } else {
-        await q.ins_waypoint.run(new_id, new_id, user_id || "anonymous", 1.0, ts, ts);
+        await q.ins_waypoint.run(
+            new_id,
+            new_id,
+            user_id || "anonymous",
+            project_id || null,
+            1.0,
+            ts,
+            ts,
+        );
     }
 }
 export async function create_inter_mem_waypoints(
@@ -537,6 +580,7 @@ export async function create_inter_mem_waypoints(
     new_vec: number[],
     ts: number,
     user_id?: string | null,
+    project_id?: string | null,
 ): Promise<void> {
     const thresh = 0.75;
     const wt = 0.5;
@@ -544,12 +588,16 @@ export async function create_inter_mem_waypoints(
     for (const vr of vecs) {
         if (vr.id === new_id) continue;
         const ex_vec = vr.vector;
-        const sim = cos_sim(new Float32Array(new_vec), new Float32Array(ex_vec));
+        const sim = cos_sim(
+            new Float32Array(new_vec),
+            new Float32Array(ex_vec),
+        );
         if (sim >= thresh) {
             await q.ins_waypoint.run(
                 new_id,
                 vr.id,
                 user_id || "anonymous",
+                project_id || null,
                 wt,
                 ts,
                 ts,
@@ -558,6 +606,7 @@ export async function create_inter_mem_waypoints(
                 vr.id,
                 new_id,
                 user_id || "anonymous",
+                project_id || null,
                 wt,
                 ts,
                 ts,
@@ -570,6 +619,7 @@ export async function create_contextual_waypoints(
     rel_ids: string[],
     base_wt: number = 0.3,
     user_id?: string | null,
+    project_id?: string | null,
 ): Promise<void> {
     const now = Date.now();
     for (const rel_id of rel_ids) {
@@ -583,6 +633,7 @@ export async function create_contextual_waypoints(
                 mem_id,
                 rel_id,
                 user_id || "anonymous",
+                project_id || null,
                 base_wt,
                 now,
                 now,
@@ -734,9 +785,20 @@ setInterval(async () => {
                 1,
                 cur_wt + hybrid_params.eta * (1 - cur_wt) * temp_fact,
             );
-            const user_id = wp?.user_id || memA?.user_id || memB?.user_id || "anonymous";
-            await q.ins_waypoint.run(a, b, user_id, new_wt, wp?.created_at || now, now);
-        } catch (e) { }
+            const project_id =
+                memA?.project_id || memB?.project_id || wp?.project_id || null;
+            const uid =
+                memA?.user_id || memB?.user_id || wp?.user_id || "anonymous";
+            await q.ins_waypoint.run(
+                a,
+                b,
+                uid,
+                project_id,
+                new_wt,
+                wp?.created_at || now,
+                now,
+            );
+        } catch (e) {}
     }
 }, 1000);
 const get_sal = async (id: string, def_sal: number): Promise<number> => {
@@ -750,12 +812,15 @@ const get_sal = async (id: string, def_sal: number): Promise<number> => {
 export async function hsg_query(
     qt: string,
     k = 10,
-    f?: { sectors?: string[]; minSalience?: number; user_id?: string; startTime?: number; endTime?: number },
+    f?: {
+        sectors?: string[];
+        minSalience?: number;
+        user_id?: string;
+        project_id?: string;
+        startTime?: number;
+        endTime?: number;
+    },
 ): Promise<hsg_q_result[]> {
-
-
-
-
     if (active_queries >= env.max_active) {
         throw new Error(
             `Rate limit: ${active_queries} active queries (max ${env.max_active})`,
@@ -775,11 +840,8 @@ export async function hsg_query(
 
         let ss: string[];
         if (f?.sectors?.length) {
-
             ss = f.sectors;
         } else {
-
-
             ss = [...sectors];
         }
         if (!ss.length) ss.push("semantic");
@@ -800,8 +862,14 @@ export async function hsg_query(
         > = {};
         for (const s of ss) {
             const qv = qe[s];
-            const results = await vector_store.searchSimilar(s, qv, k * 3, f?.user_id);
-            sr[s] = results.map(r => ({ id: r.id, similarity: r.score }));
+            const results = await vector_store.searchSimilar(
+                s,
+                qv,
+                k * 3,
+                f?.user_id,
+                f?.project_id,
+            );
+            sr[s] = results.map((r) => ({ id: r.id, similarity: r.score }));
         }
         const all_sims = Object.values(sr).flatMap((r) =>
             r.slice(0, 8).map((x) => x.similarity),
@@ -843,6 +911,16 @@ export async function hsg_query(
             const m = await q.get_mem.get(mid);
             if (!m || (f?.minSalience && m.salience < f.minSalience)) continue;
             if (f?.user_id && m.user_id !== f.user_id) continue;
+
+            // Project isolation check: match current project or system_global or legacy null
+            if (f?.project_id) {
+                const isMatch =
+                    m.project_id === f.project_id ||
+                    m.project_id === "system_global" ||
+                    m.project_id === null;
+                if (!isMatch) continue;
+            }
+
             if (f?.startTime && m.created_at < f.startTime) continue;
             if (f?.endTime && m.created_at > f.endTime) continue;
             const mvf = await calc_multi_vec_fusion_score(mid, qe, w);
@@ -861,13 +939,15 @@ export async function hsg_query(
                 }
             }
 
-
             const mem_sector = m.primary_sector;
             const query_sector = qc.primary;
             let sector_penalty = 1.0;
-            if (mem_sector !== query_sector && !primary_sectors.includes(mem_sector)) {
-
-                sector_penalty = sector_relationships[query_sector]?.[mem_sector] || 0.3;
+            if (
+                mem_sector !== query_sector &&
+                !primary_sectors.includes(mem_sector)
+            ) {
+                sector_penalty =
+                    sector_relationships[query_sector]?.[mem_sector] || 0.3;
             }
             const adjusted_sim = bs * sector_penalty;
 
@@ -880,14 +960,13 @@ export async function hsg_query(
             const tok_ov = compute_token_overlap(qtk, mtk);
             const rec_sc = calc_recency_score(m.last_seen_at);
 
-
             const tag_match = await compute_tag_match_score(mid, qtk);
 
             const keyword_boost =
                 tier === "hybrid"
                     ? (keyword_scores.get(mid) || 0) * env.keyword_boost
                     : 0;
-            const fs = compute_hybrid_score(
+            let fs = compute_hybrid_score(
                 adjusted_sim,
                 tok_ov,
                 ww,
@@ -895,6 +974,11 @@ export async function hsg_query(
                 keyword_boost,
                 tag_match,
             );
+
+            // Project Boost: 1.2x scoring multiplier for matching project_id
+            if (f?.project_id && m.project_id === f.project_id) {
+                fs = sigmoid(Math.log(fs / (1 - fs)) + 0.2); // Small logit boost
+            }
             const msec = await vector_store.getVectorsById(mid);
             const sl = msec.map((v) => v.sector);
             res.push({
@@ -906,8 +990,14 @@ export async function hsg_query(
                 path: em?.path || [mid],
                 salience: sal,
                 last_seen_at: m.last_seen_at,
-                tags: typeof m.tags === 'string' ? JSON.parse(m.tags) : (m.tags || []),
-                meta: typeof m.meta === 'string' ? JSON.parse(m.meta) : (m.meta || {}),
+                tags:
+                    typeof m.tags === "string"
+                        ? JSON.parse(m.tags)
+                        : m.tags || [],
+                meta:
+                    typeof m.meta === "string"
+                        ? JSON.parse(m.meta)
+                        : m.meta || {},
             });
         }
         res.sort((a, b) => b.score - a.score);
@@ -926,7 +1016,6 @@ export async function hsg_query(
         }
         const top = top_cands.slice(0, k);
         const tids = top.map((r) => r.id);
-
 
         for (const r of top) {
             const cur_fb = (await q.get_mem.get(r.id))?.feedback_score || 0;
@@ -987,7 +1076,7 @@ export async function hsg_query(
         for (const r of top) {
             on_query_hit(r.id, r.primary_sector, (text) =>
                 embedForSector(text, r.primary_sector),
-            ).catch(() => { });
+            ).catch(() => {});
         }
 
         cache.set(h, { r: top, t: Date.now() });
@@ -1017,7 +1106,6 @@ export async function run_decay_process(): Promise<{
     return { processed: p, decayed: d };
 }
 
-
 async function ensure_user_exists(user_id: string): Promise<void> {
     try {
         const existing = await q.get_user.get(user_id);
@@ -1027,12 +1115,11 @@ async function ensure_user_exists(user_id: string): Promise<void> {
                 "User profile initializing...",
                 0,
                 Date.now(),
-                Date.now()
+                Date.now(),
             );
         }
     } catch (error) {
         console.error(`[HSG] Failed to ensure user ${user_id} exists:`, error);
-
     }
 }
 
@@ -1041,6 +1128,7 @@ export async function add_hsg_memory(
     tags?: string,
     metadata?: any,
     user_id?: string,
+    project_id?: string,
 ): Promise<{
     id: string;
     primary_sector: string;
@@ -1063,7 +1151,6 @@ export async function add_hsg_memory(
     }
     const id = crypto.randomUUID();
     const now = Date.now();
-
 
     if (user_id) {
         await ensure_user_exists(user_id);
@@ -1099,6 +1186,7 @@ export async function add_hsg_memory(
         await q.ins_mem.run(
             id,
             user_id || "anonymous",
+            project_id || null,
             cur_seg,
             stored_content,
             simhash,
@@ -1129,12 +1217,12 @@ export async function add_hsg_memory(
                 result.vector,
                 result.dim,
                 user_id || "anonymous",
+                project_id || undefined,
             );
         }
         const mean_vec = calc_mean_vec(emb_res, all_sectors);
         const mean_vec_buf = vectorToBuffer(mean_vec);
         await q.upd_mean_vec.run(id, mean_vec.length, mean_vec_buf);
-
 
         if (tier === "smart" && mean_vec.length > 128) {
             const comp = compress_vec_for_storage(mean_vec, 128);
@@ -1142,7 +1230,7 @@ export async function add_hsg_memory(
             await q.upd_compressed_vec.run(comp_buf, id);
         }
 
-        await create_single_waypoint(id, mean_vec, now, user_id);
+        await create_single_waypoint(id, mean_vec, now, user_id, project_id);
         await transaction.commit();
         return {
             id,

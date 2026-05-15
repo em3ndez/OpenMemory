@@ -37,6 +37,7 @@ const build_mem_snap = (row: mem_row) => ({
     salience: Number(row.salience.toFixed(3)),
     last_seen_at: row.last_seen_at,
     user_id: row.user_id,
+    project_id: row.project_id,
     content_preview: trunc(row.content, 240),
 });
 
@@ -111,15 +112,21 @@ export const create_mcp_srv = () => {
                     subject: z
                         .string()
                         .optional()
-                        .describe("Subject pattern (entity) - use undefined for wildcard"),
+                        .describe(
+                            "Subject pattern (entity) - use undefined for wildcard",
+                        ),
                     predicate: z
                         .string()
                         .optional()
-                        .describe("Predicate pattern (relationship) - use undefined for wildcard"),
+                        .describe(
+                            "Predicate pattern (relationship) - use undefined for wildcard",
+                        ),
                     object: z
                         .string()
                         .optional()
-                        .describe("Object pattern (value) - use undefined for wildcard"),
+                        .describe(
+                            "Object pattern (value) - use undefined for wildcard",
+                        ),
                 })
                 .optional()
                 .describe(
@@ -140,7 +147,9 @@ export const create_mcp_srv = () => {
                 .describe("Maximum results to return (for HSG queries)"),
             sector: sec_enum
                 .optional()
-                .describe("Restrict search to a specific sector (for HSG queries)"),
+                .describe(
+                    "Restrict search to a specific sector (for HSG queries)",
+                ),
             min_salience: z
                 .number()
                 .min(0)
@@ -153,6 +162,14 @@ export const create_mcp_srv = () => {
                 .min(1)
                 .optional()
                 .describe("Isolate results to a specific user identifier"),
+            project_id: z
+                .string()
+                .trim()
+                .min(1)
+                .optional()
+                .describe(
+                    "Isolate results to a specific project identifier. If omitted, matching projects will be boosted but global/null results will still return.",
+                ),
         },
         async ({
             query,
@@ -163,22 +180,26 @@ export const create_mcp_srv = () => {
             sector,
             min_salience,
             user_id,
+            project_id,
         }) => {
             const u = uid(user_id);
+            const proj = uid(project_id);
             const results: any = { type, query };
             const at_date = at ? new Date(at) : new Date();
 
-
             if (type === "contextual" || type === "unified") {
                 const flt =
-                    sector || min_salience !== undefined || u
+                    sector || min_salience !== undefined || u || proj
                         ? {
-                            ...(sector ? { sectors: [sector as sector_type] } : {}),
-                            ...(min_salience !== undefined
-                                ? { minSalience: min_salience }
-                                : {}),
-                            ...(u ? { user_id: u } : {}),
-                        }
+                              ...(sector
+                                  ? { sectors: [sector as sector_type] }
+                                  : {}),
+                              ...(min_salience !== undefined
+                                  ? { minSalience: min_salience }
+                                  : {}),
+                              ...(u ? { user_id: u } : {}),
+                              ...(proj ? { project_id: proj } : {}),
+                          }
                         : undefined;
 
                 const matches = await hsg_query(query, k ?? 8, flt);
@@ -195,16 +216,16 @@ export const create_mcp_srv = () => {
                 }));
             }
 
-
             if (type === "factual" || type === "unified") {
-                const facts = await query_facts_at_time(
-                    fact_pattern?.subject,
-                    fact_pattern?.predicate,
-                    fact_pattern?.object,
-                    at_date,
-                    0.0,
-                    u,
-                );
+                const facts = await query_facts_at_time({
+                    user_id: u ?? "anonymous",
+                    project_id: proj,
+                    subject: fact_pattern?.subject,
+                    predicate: fact_pattern?.predicate,
+                    object: fact_pattern?.object,
+                    at: at_date,
+                    min_confidence: 0.0,
+                });
 
                 results.factual = facts.map((f: any) => ({
                     source: "temporal",
@@ -218,7 +239,6 @@ export const create_mcp_srv = () => {
                     content: `${f.subject} ${f.predicate} ${f.object}`,
                 }));
             }
-
 
             let summ = "";
             if (type === "contextual") {
@@ -237,7 +257,6 @@ export const create_mcp_srv = () => {
                         .join("\n\n");
                 }
             } else {
-
                 const ctx_count = results.contextual?.length || 0;
                 const fact_count = results.factual?.length || 0;
                 summ = `Found ${ctx_count} contextual memories and ${fact_count} temporal facts.\n\n`;
@@ -275,10 +294,14 @@ export const create_mcp_srv = () => {
     );
 
     registry.tool(
-        "openmemory_store",
-        "Persist new content into OpenMemory (HSG contextual memory and/or temporal facts)",
+        "openmemory_store_project",
+        "Persist new content scoped to a SPECIFIC PROJECT. Use this for design decisions, code patterns, or business logic that is unique to this project. If unsure if the content is project-specific vs global, YOU MUST ASK THE USER for clarification.",
         {
             content: z.string().min(1).describe("Raw memory text to store"),
+            project_id: z
+                .string()
+                .min(1)
+                .describe("The unique identifier for the current project"),
             type: z
                 .enum(["contextual", "factual", "both"])
                 .optional()
@@ -289,12 +312,18 @@ export const create_mcp_srv = () => {
             facts: z
                 .array(
                     z.object({
-                        subject: z.string().min(1).describe("Fact subject (entity)"),
+                        subject: z
+                            .string()
+                            .min(1)
+                            .describe("Fact subject (entity)"),
                         predicate: z
                             .string()
                             .min(1)
                             .describe("Fact predicate (relationship)"),
-                        object: z.string().min(1).describe("Fact object (value)"),
+                        object: z
+                            .string()
+                            .min(1)
+                            .describe("Fact object (value)"),
                         confidence: z
                             .number()
                             .min(0)
@@ -330,10 +359,18 @@ export const create_mcp_srv = () => {
                     "Associate the memory with a specific user identifier",
                 ),
         },
-        async ({ content, type = "contextual", facts, tags, metadata, user_id }) => {
+        async ({
+            content,
+            project_id,
+            type = "contextual",
+            facts,
+            tags,
+            metadata,
+            user_id,
+        }) => {
             const u = uid(user_id);
+            const proj = uid(project_id);
             const results: any = { type };
-
 
             if (
                 (type === "factual" || type === "both") &&
@@ -344,20 +381,19 @@ export const create_mcp_srv = () => {
                 );
             }
 
-
             if (type === "contextual" || type === "both") {
                 const res = await add_hsg_memory(
                     content,
                     j(tags || []),
                     metadata,
                     u,
+                    proj,
                 );
                 results.hsg = {
                     id: res.id,
                     primary_sector: res.primary_sector,
                     sectors: res.sectors,
                 };
-
                 if (u) {
                     update_user_summary(u).catch((err) =>
                         console.error("[MCP] user summary update failed:", err),
@@ -365,54 +401,154 @@ export const create_mcp_srv = () => {
                 }
             }
 
-
             if ((type === "factual" || type === "both") && facts) {
                 const temporal_results = [];
                 for (const fact of facts) {
                     const valid_from = fact.valid_from
                         ? new Date(fact.valid_from)
                         : new Date();
-                    const confidence = fact.confidence ?? 1.0;
-
-                    const fact_id = await insert_fact(
-                        fact.subject,
-                        fact.predicate,
-                        fact.object,
+                    const fact_id = await insert_fact({
+                        subject: fact.subject,
+                        predicate: fact.predicate,
+                        object: fact.object,
                         valid_from,
-                        confidence,
+                        confidence: fact.confidence ?? 1.0,
                         metadata,
-                        u,
-                    );
-
+                        user_id: u,
+                        project_id: proj,
+                    });
                     temporal_results.push({
                         id: fact_id,
                         subject: fact.subject,
                         predicate: fact.predicate,
                         object: fact.object,
                         valid_from: valid_from.toISOString(),
-                        confidence,
+                        confidence: fact.confidence ?? 1.0,
                     });
                 }
                 results.temporal = temporal_results;
             }
 
-
-            let txt = "";
-            if (type === "contextual") {
-                txt = `Stored memory ${results.hsg.id} (primary=${results.hsg.primary_sector}) across sectors: ${results.hsg.sectors.join(", ")}${u ? ` [user=${u}]` : ""}`;
-            } else if (type === "factual") {
-                txt = `Stored ${results.temporal.length} temporal fact(s)${u ? ` [user=${u}]` : ""}`;
-            } else {
-                txt = `Stored in both systems: HSG memory ${results.hsg.id} + ${results.temporal.length} temporal fact(s)${u ? ` [user=${u}]` : ""}`;
-            }
-
+            const txt = `Stored project memory [project=${proj}]`;
             return {
                 content: [
                     { type: "text", text: txt },
                     {
                         type: "text",
                         text: JSON.stringify(
-                            { ...results, user_id: u ?? null },
+                            {
+                                ...results,
+                                user_id: u ?? null,
+                                project_id: proj,
+                            },
+                            null,
+                            2,
+                        ),
+                    },
+                ],
+            };
+        },
+    );
+
+    // PROPOSAL: Consider renaming this tool to openmemory_store_global in the future to distinguish from project-specific storage.
+    // The current name 'openmemory_store' is kept for architectural compatibility.
+    registry.tool(
+        "openmemory_store",
+        "Persist new content as GLOBAL KNOWLEDGE. Use this for general coding best practices, common library knowledge, or universal system concepts. If unsure if the content is global vs project-specific, YOU MUST ASK THE USER for clarification.",
+        {
+            content: z.string().min(1).describe("Raw memory text to store"),
+            type: z
+                .enum(["contextual", "factual", "both"])
+                .optional()
+                .default("contextual")
+                .describe("Storage type"),
+            facts: z
+                .array(
+                    z.object({
+                        subject: z.string().min(1),
+                        predicate: z.string().min(1),
+                        object: z.string().min(1),
+                        confidence: z.number().optional(),
+                        valid_from: z.string().optional(),
+                    }),
+                )
+                .optional(),
+            tags: z.array(z.string()).optional(),
+            metadata: z.record(z.any()).optional(),
+            user_id: z.string().trim().min(1).optional(),
+        },
+        async ({
+            content,
+            type = "contextual",
+            facts,
+            tags,
+            metadata,
+            user_id,
+        }) => {
+            const u = uid(user_id);
+            // Force global scope for this tool
+            const proj = "system_global";
+            const results: any = { type };
+
+            if (type === "contextual" || type === "both") {
+                // Add to contextual memory system (HSG)
+                const res = await add_hsg_memory(
+                    content,
+                    j(tags || []),
+                    metadata,
+                    u,
+                    proj,
+                );
+                results.hsg = {
+                    id: res.id,
+                    primary_sector: res.primary_sector,
+                    sectors: res.sectors,
+                };
+            }
+
+            if ((type === "factual" || type === "both") && facts) {
+                // Add to factual graph system (Temporal)
+                const temporal_results = [];
+                for (const fact of facts) {
+                    const valid_from = fact.valid_from
+                        ? new Date(fact.valid_from)
+                        : new Date();
+                    const fact_id = await insert_fact({
+                        subject: fact.subject,
+                        predicate: fact.predicate,
+                        object: fact.object,
+                        valid_from,
+                        confidence: fact.confidence ?? 1.0,
+                        metadata,
+                        user_id: u,
+                        project_id: proj,
+                    });
+                    temporal_results.push({
+                        id: fact_id,
+                        subject: fact.subject,
+                        predicate: fact.predicate,
+                        object: fact.object,
+                        valid_from: valid_from.toISOString(),
+                        confidence: fact.confidence ?? 1.0,
+                    });
+                }
+                results.temporal = temporal_results;
+            }
+
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Stored global memory [scope=system_global]`,
+                    },
+                    {
+                        type: "text",
+                        text: JSON.stringify(
+                            {
+                                ...results,
+                                user_id: u ?? null,
+                                project_id: proj,
+                            },
                             null,
                             2,
                         ),
@@ -452,28 +588,61 @@ export const create_mcp_srv = () => {
         "Delete a memory by identifier",
         {
             id: z.string().min(1).describe("Memory identifier to delete"),
-            user_id: z.string().trim().min(1).optional().describe("Validate ownership"),
+            user_id: z
+                .string()
+                .trim()
+                .min(1)
+                .optional()
+                .describe("Validate ownership"),
+            project_id: z
+                .string()
+                .trim()
+                .min(1)
+                .optional()
+                .describe("Validate project identifier"),
         },
-        async ({ id, user_id }) => {
+        async ({ id, user_id, project_id }) => {
             const u = uid(user_id);
-            if (u) {
-                // Pre-check ownership if user_id provided
+            const proj = uid(project_id);
+            if (u || proj) {
+                // Pre-check ownership if user_id/project_id provided
                 const mem = await q.get_mem.get(id);
-                if (mem && mem.user_id !== u) {
-                    throw new Error(`Memory ${id} not found for user ${u}`);
+                if (mem) {
+                    if (u && mem.user_id !== u)
+                        throw new Error(`Memory ${id} not found for user ${u}`);
+                    if (
+                        proj &&
+                        mem.project_id &&
+                        mem.project_id !== proj &&
+                        mem.project_id !== "system_global"
+                    ) {
+                        throw new Error(
+                            `Memory ${id} belongs to another project and cannot be deleted from ${proj}`,
+                        );
+                    }
                 }
             }
 
             const success = await delete_memory(id);
             if (!success) {
                 return {
-                    content: [{ type: "text", text: `Memory ${id} not found or could not be deleted.` }],
-                    isError: true
+                    content: [
+                        {
+                            type: "text",
+                            text: `Memory ${id} not found or could not be deleted.`,
+                        },
+                    ],
+                    isError: true,
                 };
             }
 
             return {
-                content: [{ type: "text", text: `Memory ${id} successfully deleted.` }],
+                content: [
+                    {
+                        type: "text",
+                        text: `Memory ${id} successfully deleted.`,
+                    },
+                ],
             };
         },
     );
@@ -489,18 +658,49 @@ export const create_mcp_srv = () => {
                 .max(50)
                 .default(10)
                 .describe("Number of memories to return"),
-            sector: sec_enum.optional().describe("Optionally limit to a sector"),
+            sector: sec_enum
+                .optional()
+                .describe("Optionally limit to a sector"),
             user_id: z
                 .string()
                 .trim()
                 .min(1)
                 .optional()
                 .describe("Restrict results to a specific user identifier"),
+            project_id: z
+                .string()
+                .trim()
+                .min(1)
+                .optional()
+                .describe("Restrict results to a specific project identifier"),
         },
-        async ({ limit, sector, user_id }) => {
+        async ({ limit, sector, user_id, project_id }) => {
             const u = uid(user_id);
+            const proj = uid(project_id);
             let rows: mem_row[];
-            if (u) {
+
+            // This is a bit simplified for listing; we'll fetch based on filters
+            // In a real app we'd have a specialized query, but for now we'll use existing ones
+            // and post-filter or just use the project filter if available
+            if (proj) {
+                // If project specified, we need a query that supports it.
+                // For now, let's just use a raw query if it's easier or use hsg_query
+                rows = await all_async(
+                    `
+                    SELECT * FROM ${memories_table} 
+                    WHERE (project_id = ? OR project_id = 'system_global' OR project_id IS NULL)
+                    ${u ? " AND user_id = ?" : ""}
+                    ${sector ? " AND primary_sector = ?" : ""}
+                    ORDER BY last_seen_at DESC LIMIT ?
+                `,
+                    [
+                        proj,
+                        ...(u ? [u] : []),
+                        ...(sector ? [sector] : []),
+                        limit ?? 10,
+                    ],
+                );
+            } else if (u) {
                 const all = await q.all_mem_by_user.all(u, limit ?? 10, 0);
                 rows = sector
                     ? all.filter((row) => row.primary_sector === sector)
@@ -517,7 +717,7 @@ export const create_mcp_srv = () => {
             }));
             const lns = items.map(
                 (item, idx) =>
-                    `${idx + 1}. [${item.primary_sector}] salience=${item.salience} id=${item.id}${item.tags.length ? ` tags=${item.tags.join(", ")}` : ""}${item.user_id ? ` user=${item.user_id}` : ""}\n${item.content_preview}`,
+                    `${idx + 1}. [${item.primary_sector}] salience=${item.salience} id=${item.id}${item.tags.length ? ` tags=${item.tags.join(", ")}` : ""}${item.user_id ? ` user=${item.user_id}` : ""}${item.project_id ? ` project=${item.project_id}` : ""}\n${item.content_preview}`,
             );
             return {
                 content: [
@@ -613,6 +813,7 @@ export const create_mcp_srv = () => {
                 server: { version: "2.1.0", protocol: "2025-06-18" },
                 available_tools: [
                     "openmemory_query",
+                    "openmemory_store_project",
                     "openmemory_store",
                     "openmemory_reinforce",
                     "openmemory_list",
@@ -631,7 +832,6 @@ export const create_mcp_srv = () => {
     );
 
     srv.server.oninitialized = () => {
-
         console.error(
             "[MCP] initialization completed with client:",
             srv.server.getClientVersion(),
@@ -662,24 +862,8 @@ const extract_pay = async (req: IncomingMessage & { body?: any }) => {
 };
 
 export const mcp = (app: any) => {
-    const srv = create_mcp_srv();
-    const trans = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-    });
-    const srv_ready = srv
-        .connect(trans)
-        .then(() => {
-            console.error("[MCP] Server started and transport connected");
-        })
-        .catch((error) => {
-            console.error("[MCP] Failed to initialize transport:", error);
-            throw error;
-        });
-
     const handle_req = async (req: any, res: any) => {
         try {
-            await srv_ready;
             const pay = await extract_pay(req);
             if (!pay || typeof pay !== "object") {
                 send_err(res, -32600, "Request body must be a JSON object");
@@ -687,6 +871,16 @@ export const mcp = (app: any) => {
             }
             console.error("[MCP] Incoming request:", JSON.stringify(pay));
             set_hdrs(res);
+
+            // Create a fresh transport + server per request to support
+            // multiple clients (MCP SDK 1.27 rejects re-initialization
+            // on a single transport instance).
+            const srv = create_mcp_srv();
+            const trans = new StreamableHTTPServerTransport({
+                sessionIdGenerator: undefined,
+                enableJsonResponse: true,
+            });
+            await srv.connect(trans);
             await trans.handleRequest(req, res, pay);
         } catch (error) {
             console.error("[MCP] Error handling request:", error);
@@ -732,7 +926,6 @@ export const start_mcp_stdio = async () => {
     const srv = create_mcp_srv();
     const trans = new StdioServerTransport();
     await srv.connect(trans);
-
 };
 
 if (typeof require !== "undefined" && require.main === module) {
